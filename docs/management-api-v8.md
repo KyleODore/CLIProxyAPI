@@ -91,6 +91,7 @@ retain the corresponding business operation's fields.
 | `/server/latest-version` | GET | Get latest release information. |
 | `/requests/api-call` | POST | Make an authenticated upstream call. |
 | `/routing/cooldown/reset` | POST | Clear credential cooldown. |
+| `/routing/status` | GET | Read the current routing strategy and per-account selection state. |
 | `/routing/model-definitions/<channel>` | GET | Get model definitions. |
 | `/observability/logs` | GET, DELETE | Read or clear application logs. |
 | `/observability/logs/errors` | GET | List error-log files. |
@@ -117,6 +118,39 @@ retain the corresponding business operation's fields.
 | `/plugins/store` | GET | List the plugin store. |
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |
 | `/plugins/<id>/quota` | GET, POST, DELETE | Read, fetch, or reset plugin quota. |
+
+### Routing status
+
+`GET /routing/status` returns the installed `strategy`, a UTC `generated_at` timestamp,
+a `session_affinity` summary, and a non-null `providers` map. If the core auth manager
+is unavailable, it returns `503` with `{"error":"core auth manager unavailable"}`.
+For `soonest-reset`, each provider entry contains account-level diagnostic snapshots
+with `auth_index`, `priority`, `state`, `reason`, and `probe_pending`, plus applicable
+reset and observation timestamps.
+
+`rank` is the account's one-based preference within that provider at the snapshot
+instant; rank 1 is preferred. Blocked accounts sort after unblocked accounts; within
+each of those groups, higher-priority accounts sort before lower-priority accounts.
+Disabled, cooling-down, and unavailable accounts are blocked diagnostic entries and
+have no rank. At the same priority, eligible accounts sort before exhausted accounts,
+but exhausted accounts remain ranked after usable ones. An unknown subscription reset
+that needs a probe then ranks before known weekly resets; known resets sort soonest
+first. Accounts with a pending probe or without a learnable weekly reset follow, with
+stable tie ordering. Ranks are not global across providers and do not predict the
+result of a later request after state changes.
+
+When session affinity wraps `soonest-reset`, `session_affinity` reports whether it is
+enabled and summarizes its TTL, subagent affinity, and rebind policy. It does not expose
+session bindings. `probe_pending` means a recent selection is awaiting quota
+observation; reading the status neither starts nor reserves a probe. Unknown
+`weekly_reset`, `exhausted_until`, and `observed_at` timestamps are omitted.
+
+This is a point-in-time, account-level view of the latest observations, not per-model
+quota state, historical usage, or an upstream health check. The request is read-only:
+it does not select a credential, refresh quota, mutate routing state, or generate
+upstream traffic. Responses contain stable authentication indexes but exclude
+credential IDs, file names, tokens, API keys, proxy URLs, metadata, attributes, and raw
+quota signals.
 
 ## OAuth
 
