@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -338,5 +339,69 @@ func TestRoutingStatusSecretExclusion(t *testing.T) {
 		if _, found := accountJSON[field]; found {
 			t.Errorf("snapshot JSON unexpectedly exposes field %q", field)
 		}
+	}
+}
+
+func TestSoonestResetRoutingStatusAliasProbeSharedWithScheduler(t *testing.T) {
+	const routeModel = "routing-status-alias"
+	const targetModel = "routing-status-target"
+	authA := claudeSubscription("routing-status-alias-a", time.Time{}, nil)
+	authB := claudeSubscription("routing-status-alias-b", time.Time{}, nil)
+	registerSoonestResetModels(t, "claude", []string{authA.ID, authB.ID}, targetModel)
+	selector := &SoonestResetSelector{}
+	manager := newRoutingStatusManager(selector, authA, authB)
+	manager.executors["claude"] = schedulerTestExecutor{provider: "claude"}
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {{Name: targetModel, Alias: routeModel, Fork: true}},
+	})
+
+	first, _, errPick := manager.pickNext(context.Background(), "claude", routeModel, cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("alias pickNext() error = %v", errPick)
+	}
+	if first.ID != authA.ID {
+		t.Fatalf("alias pick = %q, want first probe %q", first.ID, authA.ID)
+	}
+	account := routingStatusAccountForAuth(t, manager.RoutingStatus(), "claude", authA)
+	if !account.ProbePending {
+		t.Errorf("alias probe is absent from RoutingStatus: %+v", account)
+	}
+
+	second, _, errPick := manager.pickNext(context.Background(), "claude", targetModel, cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("non-alias pickNext() error = %v", errPick)
+	}
+	if second.ID != authB.ID {
+		t.Errorf("non-alias pick = %q, want %q while %q has a probe pending", second.ID, authB.ID, authA.ID)
+	}
+}
+
+func TestSoonestResetRoutingStatusPluginFallbackProbeSharedWithScheduler(t *testing.T) {
+	authA := claudeSubscription("routing-status-plugin-a", time.Time{}, nil)
+	authB := claudeSubscription("routing-status-plugin-b", time.Time{}, nil)
+	selector := &SoonestResetSelector{}
+	manager := newRoutingStatusManager(selector, authA, authB)
+	manager.executors["claude"] = schedulerTestExecutor{provider: "claude"}
+	manager.SetPluginScheduler(&fakePluginScheduler{handled: false})
+
+	first, _, errPick := manager.pickNext(context.Background(), "claude", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("plugin fallback pickNext() error = %v", errPick)
+	}
+	if first.ID != authA.ID {
+		t.Fatalf("plugin fallback pick = %q, want first probe %q", first.ID, authA.ID)
+	}
+	account := routingStatusAccountForAuth(t, manager.RoutingStatus(), "claude", authA)
+	if !account.ProbePending {
+		t.Errorf("plugin fallback probe is absent from RoutingStatus: %+v", account)
+	}
+
+	manager.SetPluginScheduler(nil)
+	second, _, errPick := manager.pickNext(context.Background(), "claude", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("scheduler pickNext() error = %v", errPick)
+	}
+	if second.ID != authB.ID {
+		t.Errorf("scheduler pick = %q, want %q while %q has a probe pending", second.ID, authB.ID, authA.ID)
 	}
 }

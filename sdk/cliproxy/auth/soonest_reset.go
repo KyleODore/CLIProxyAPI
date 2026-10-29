@@ -223,10 +223,28 @@ func selectorUsesSoonestReset(selector Selector) bool {
 	}
 }
 
+type soonestResetSchedulerKey struct{}
+
+func withSoonestResetScheduler(ctx context.Context, scheduler *authScheduler) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, soonestResetSchedulerKey{}, scheduler)
+}
+
+func soonestResetSchedulerFromContext(ctx context.Context) *authScheduler {
+	if ctx == nil {
+		return nil
+	}
+	scheduler, _ := ctx.Value(soonestResetSchedulerKey{}).(*authScheduler)
+	return scheduler
+}
+
 // withSoonestResetFactsForSelector hands a soonest-reset selector the scheduler's facts for
 // auths. The scheduler records them as results arrive and carries them across snapshots
 // without usage windows; the selector sees snapshots only when it picks, and session
-// affinity serves most requests without a pick.
+// affinity serves most requests without a pick. Bare selectors also use the scheduler's
+// probe ledgers so legacy and scheduler picks share one pending-probe owner.
 func (m *Manager) withSoonestResetFactsForSelector(ctx context.Context, selector Selector, auths []*Auth) context.Context {
 	if m == nil || m.scheduler == nil || !selectorUsesSoonestReset(selector) {
 		return ctx
@@ -237,7 +255,11 @@ func (m *Manager) withSoonestResetFactsForSelector(ctx context.Context, selector
 			ids = append(ids, auth.ID)
 		}
 	}
-	return withSoonestResetFacts(ctx, m.scheduler.soonestResetFacts(ids))
+	ctx = withSoonestResetFacts(ctx, m.scheduler.soonestResetFacts(ids))
+	if _, bare := selector.(*SoonestResetSelector); bare {
+		ctx = withSoonestResetScheduler(ctx, m.scheduler)
+	}
+	return ctx
 }
 
 // pickSoonestResetAuth returns the auth whose weekly usage window resets soonest, ranking an
@@ -245,10 +267,12 @@ func (m *Manager) withSoonestResetFactsForSelector(ctx context.Context, selector
 // probes, when given, are respected; a pick that probes an unknown reset is recorded there
 // when recordProbe is set.
 func pickSoonestResetAuth(auths []*Auth, now time.Time, known map[string]soonestResetFacts, probes *soonestResetProbes, recordProbe bool) *Auth {
-	var pending soonestResetProbes
-	if probes != nil {
-		pending = *probes
-	}
+	return pickSoonestResetAuthWithProbeResolver(auths, now, known, func(*Auth) *soonestResetProbes {
+		return probes
+	}, recordProbe)
+}
+
+func pickSoonestResetAuthWithProbeResolver(auths []*Auth, now time.Time, known map[string]soonestResetFacts, probesFor func(*Auth) *soonestResetProbes, recordProbe bool) *Auth {
 	var best *Auth
 	var bestRank soonestResetRank
 	for _, candidate := range auths {
@@ -259,14 +283,20 @@ func pickSoonestResetAuth(auths []*Auth, now time.Time, known map[string]soonest
 		if !ok {
 			facts = soonestResetFactsFor(candidate)
 		}
+		var pending soonestResetProbes
+		if probes := probesFor(candidate); probes != nil {
+			pending = *probes
+		}
 		rank := facts.rank(now, pending.pending(candidate.ID, now))
 		if best == nil || soonestResetPrefers(rank, candidate.ID, bestRank, best.ID) {
 			best = candidate
 			bestRank = rank
 		}
 	}
-	if best != nil && probes != nil && recordProbe && bestRank.class == soonestResetClassProbe {
-		probes.record(best.ID, now)
+	if best != nil && recordProbe && bestRank.class == soonestResetClassProbe {
+		if probes := probesFor(best); probes != nil {
+			probes.record(best.ID, now)
+		}
 	}
 	return best
 }

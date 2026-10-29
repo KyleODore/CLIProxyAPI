@@ -1765,6 +1765,21 @@ func (s *authScheduler) soonestResetFacts(ids []string) map[string]soonestResetF
 	return facts
 }
 
+// pickSoonestResetLegacy ranks and records a manager-backed legacy selector pick with the
+// same provider probe ledgers and lock used by scheduler picks.
+func (s *authScheduler) pickSoonestResetLegacy(auths []*Auth, now time.Time, known map[string]soonestResetFacts, recordProbe bool) *Auth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return pickSoonestResetAuthWithProbeResolver(auths, now, known, func(candidate *Auth) *soonestResetProbes {
+		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+		providerState := s.providers[providerKey]
+		if providerState == nil {
+			return nil
+		}
+		return &providerState.soonestResetProbes
+	}, recordProbe)
+}
+
 // pickSoonestResetLocked returns the ready entry in view whose weekly usage window resets
 // soonest. Ranks are computed at pick time because quota snapshots change on every result
 // without reordering the view; the view is ID-sorted, so equal ranks resolve to the lowest

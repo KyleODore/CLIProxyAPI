@@ -843,6 +843,9 @@ func (s *SoonestResetSelector) Pick(ctx context.Context, provider, model string,
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if scheduler := soonestResetSchedulerFromContext(ctx); scheduler != nil {
+		return scheduler.pickSoonestResetLegacy(available, now, soonestResetFactsFromContext(ctx), soonestResetProbeAllowed(ctx)), nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return pickSoonestResetAuth(available, now, soonestResetFactsFromContext(ctx), &s.probes, soonestResetProbeAllowed(ctx)), nil
