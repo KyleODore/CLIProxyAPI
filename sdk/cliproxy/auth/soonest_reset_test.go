@@ -378,6 +378,7 @@ func TestParseQuotaResetTime(t *testing.T) {
 	for raw, want := range map[string]time.Time{
 		"1787695200":           time.Unix(1787695200, 0),
 		"1787695200.5":         time.Unix(1787695200, int64(500*time.Millisecond)),
+		"253402300799":         time.Unix(253402300799, 0),
 		"2026-10-26T12:00:00Z": time.Date(2026, time.October, 26, 12, 0, 0, 0, time.UTC),
 	} {
 		got, ok := parseQuotaResetTime(raw)
@@ -385,7 +386,7 @@ func TestParseQuotaResetTime(t *testing.T) {
 			t.Fatalf("parseQuotaResetTime(%q) = %v, %v; want %v", raw, got, ok, want)
 		}
 	}
-	for _, raw := range []string{"", "soon", "NaN", "-5", "0", "1e300"} {
+	for _, raw := range []string{"", "soon", "NaN", "-5", "0", "253402300800", "1e12", "1e300"} {
 		if got, ok := parseQuotaResetTime(raw); ok {
 			t.Fatalf("parseQuotaResetTime(%q) = %v, want rejection", raw, got)
 		}
@@ -599,6 +600,30 @@ func TestSchedulerPick_SoonestResetUsesFreshQuotaAcrossModelShards(t *testing.T)
 	got, errPick := scheduler.pickSingle(context.Background(), "claude", "sr-shard-model-y", cliproxyexecutor.Options{}, tried)
 	if errPick != nil || got.ID != "sr-shard-b" {
 		t.Fatalf("retry pick = %v, %v; want sr-shard-b", got, errPick)
+	}
+}
+
+func TestSchedulerRebuildPreservesSoonestResetProbes(t *testing.T) {
+	t.Parallel()
+
+	authA := claudeSubscription("sr-rebuild-a", time.Time{}, nil)
+	authB := claudeSubscription("sr-rebuild-b", time.Time{}, nil)
+	scheduler := newSchedulerForTest(&SoonestResetSelector{}, authA, authB)
+	pick := func() string {
+		t.Helper()
+		got, errPick := scheduler.pickSingle(context.Background(), "claude", "", cliproxyexecutor.Options{}, nil)
+		if errPick != nil {
+			t.Fatalf("pickSingle() error = %v", errPick)
+		}
+		return got.ID
+	}
+
+	if got := pick(); got != authA.ID {
+		t.Fatalf("first pick = %q, want probe %q", got, authA.ID)
+	}
+	scheduler.rebuild([]*Auth{authA, authB})
+	if got := pick(); got != authB.ID {
+		t.Fatalf("pick after rebuild = %q, want %q while %q has a probe pending", got, authB.ID, authA.ID)
 	}
 }
 

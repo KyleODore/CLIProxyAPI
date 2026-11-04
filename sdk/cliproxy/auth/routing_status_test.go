@@ -405,3 +405,18 @@ func TestSoonestResetRoutingStatusPluginFallbackProbeSharedWithScheduler(t *test
 		t.Errorf("scheduler pick = %q, want %q while %q has a probe pending", second.ID, authB.ID, authA.ID)
 	}
 }
+
+func TestSoonestResetRoutingStatusIgnoresFarFutureReset(t *testing.T) {
+	auth := claudeSubscription("routing-status-far-future", time.Time{}, map[string]string{
+		"Anthropic-Ratelimit-Unified-7d-Reset": "253402300800",
+	})
+	manager := newRoutingStatusManager(&SoonestResetSelector{}, auth)
+	snapshot := manager.RoutingStatus()
+	if _, errMarshal := json.Marshal(snapshot); errMarshal != nil {
+		t.Fatalf("json.Marshal() error = %v", errMarshal)
+	}
+	account := routingStatusAccountForAuth(t, snapshot, "claude", auth)
+	if account.WeeklyReset != nil {
+		t.Fatalf("weekly_reset = %v, want malformed far-future input ignored", account.WeeklyReset)
+	}
+}

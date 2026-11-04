@@ -32,6 +32,8 @@ const (
 	quotaWindowFallback = 5 * time.Hour
 	// maxQuotaSignalSeconds bounds numeric signals (about 31 years in seconds).
 	maxQuotaSignalSeconds = 1e9
+	// maxQuotaResetUnixSeconds is the last whole second representable by time.Time's JSON format.
+	maxQuotaResetUnixSeconds = 253402300799
 	// soonestResetProbeHold is how long a probe pick reserves a credential: other picks rank
 	// it as a pending subscription meanwhile, so concurrent requests do not pile onto it
 	// before its response (for streams, the end of the stream) records the reset.
@@ -504,7 +506,7 @@ func parseQuotaResetTime(raw string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	if seconds, errParse := strconv.ParseFloat(raw, 64); errParse == nil {
-		if math.IsNaN(seconds) || seconds <= 0 || seconds > 1e12 {
+		if math.IsNaN(seconds) || seconds <= 0 || seconds > maxQuotaResetUnixSeconds {
 			return time.Time{}, false
 		}
 		whole := int64(seconds)

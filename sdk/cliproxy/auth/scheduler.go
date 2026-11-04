@@ -289,10 +289,12 @@ func (s *authScheduler) rebuild(auths []*Auth) {
 	// Capture existing auth metadata so that in-flight MarkResult updates (which advanced
 	// Generation and updated cooldown/quota states) are preserved during rebuild.
 	existingMetas := make(map[string]*scheduledAuthMeta)
-	for _, pState := range s.providers {
+	existingProbes := make(map[string]soonestResetProbes)
+	for providerKey, pState := range s.providers {
 		if pState == nil {
 			continue
 		}
+		existingProbes[providerKey] = pState.soonestResetProbes
 		for id, meta := range pState.auths {
 			if meta != nil && meta.auth != nil {
 				existingMetas[id] = meta
@@ -310,6 +312,11 @@ func (s *authScheduler) rebuild(auths []*Auth) {
 	now := time.Now()
 	for _, auth := range auths {
 		s.upsertAuthRebuildLocked(auth, existingMetas, now)
+	}
+	for providerKey, probes := range existingProbes {
+		if pState := s.providers[providerKey]; pState != nil {
+			pState.soonestResetProbes = probes
+		}
 	}
 }
 

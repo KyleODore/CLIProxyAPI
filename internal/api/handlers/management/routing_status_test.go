@@ -80,6 +80,41 @@ func TestGetRoutingStatus(t *testing.T) {
 	}
 }
 
+func TestGetRoutingStatusIgnoresFarFutureReset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, &coreauth.SoonestResetSelector{}, nil)
+	_, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "routing-status-far-future",
+		Provider: "claude",
+		Metadata: map[string]any{"access_token": "token"},
+		Quota: coreauth.QuotaState{Signals: map[string]string{
+			"Anthropic-Ratelimit-Unified-7d-Reset": "253402300800",
+		}},
+	})
+	if errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	handler := NewHandler(&config.Config{}, "", manager)
+	router := gin.New()
+	router.GET("/routing/status", handler.GetRoutingStatus)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/routing/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var snapshot coreauth.RoutingStatusSnapshot
+	if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &snapshot); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal() error = %v; body = %s", errUnmarshal, recorder.Body.String())
+	}
+	accounts := snapshot.Providers["claude"]
+	if len(accounts) != 1 {
+		t.Fatalf("claude account count = %d, want 1; body = %s", len(accounts), recorder.Body.String())
+	}
+	if accounts[0].WeeklyReset != nil {
+		t.Fatalf("weekly_reset = %v, want malformed far-future input ignored", accounts[0].WeeklyReset)
+	}
+}
+
 func TestGetRoutingStatusWithoutManager(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewHandler(&config.Config{}, "", nil)
