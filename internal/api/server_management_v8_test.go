@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func TestManagementV8RoutesShareAccessControl(t *testing.T) {
@@ -55,6 +56,72 @@ func TestManagementV8RoutesShareAccessControl(t *testing.T) {
 				s.engine.ServeHTTP(recorder, req)
 				if recorder.Code != tc.want {
 					t.Fatalf("%s: status=%d want=%d body=%s", route, recorder.Code, tc.want, recorder.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestManagementV8RoutingStatusAccessControl(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name                      string
+		enabled, home, authorized bool
+		want                      int
+	}{
+		{"authorized local", true, false, true, http.StatusOK},
+		{"missing key", true, false, false, http.StatusUnauthorized},
+		{"management disabled", false, false, true, http.StatusNotFound},
+		{"home mode", true, true, true, http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("port: 8317\nremote-management: {secret-key: test-password}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Home.Enabled = tc.home
+			manager := coreauth.NewManager(nil, &coreauth.SoonestResetSelector{}, nil)
+			h := management.NewHandler(cfg, path, manager)
+			h.SetLocalPassword("test-password")
+			s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
+			s.managementRoutesEnabled.Store(tc.enabled)
+			s.registerManagementRoutes()
+
+			req := httptest.NewRequest(http.MethodGet, "/v8/management/routing/status", nil)
+			req.RemoteAddr = "127.0.0.1:1234"
+			if tc.authorized {
+				req.Header.Set("Authorization", "Bearer test-password")
+			}
+			recorder := httptest.NewRecorder()
+			s.engine.ServeHTTP(recorder, req)
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if tc.want == http.StatusOK {
+				var snapshot coreauth.RoutingStatusSnapshot
+				if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &snapshot); errUnmarshal != nil {
+					t.Fatalf("json.Unmarshal() error = %v; body = %s", errUnmarshal, recorder.Body.String())
+				}
+				if snapshot.Strategy != "soonest-reset" || snapshot.Providers == nil {
+					t.Fatalf("unexpected routing status: %s", recorder.Body.String())
+				}
+
+				for _, absent := range []struct{ method, path string }{
+					{http.MethodGet, "/v0/management/routing/status"},
+					{http.MethodPut, "/v8/management/routing/reset-hints"},
+				} {
+					absentReq := httptest.NewRequest(absent.method, absent.path, nil)
+					absentReq.RemoteAddr = "127.0.0.1:1234"
+					absentReq.Header.Set("Authorization", "Bearer test-password")
+					absentRecorder := httptest.NewRecorder()
+					s.engine.ServeHTTP(absentRecorder, absentReq)
+					if absentRecorder.Code != http.StatusNotFound {
+						t.Fatalf("%s %s: status = %d, want %d; body = %s", absent.method, absent.path, absentRecorder.Code, http.StatusNotFound, absentRecorder.Body.String())
+					}
 				}
 			}
 		})
